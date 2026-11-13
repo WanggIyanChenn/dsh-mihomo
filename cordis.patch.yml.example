@@ -1,0 +1,11 @@
+# dsh-mihomo —— 在 DSH 进程里托管一个 mihomo 内核，
+# 并把它作为整进程的出站代理（通过 @deepseek-ai/dsh-http-proxy 热装）。
+# 复制成 cordis.patch.yml 再填自己的订阅地址；真实文件不进仓库（含订阅凭据）。
+- insert:
+    - id: dsh-mihomo
+      name: dsh-mihomo
+      config:
+        enabled: true
+        autoStart: true
+        subscriptionUrl: ''
+        subscriptionHours: 6

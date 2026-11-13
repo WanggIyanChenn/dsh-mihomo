@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Mihomo proxy",
+    "description": "Runs a local mihomo kernel inside the harness and routes every outbound request through it, so no separate Clash client is needed.",
+    "detail": "docs/DETAIL.md"
+  }
+}

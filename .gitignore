@@ -1,0 +1,8 @@
+node_modules/
+bin/
+data/
+*.log
+config.yaml
+config*.yaml
+cordis.patch.yml
+.DS_Store

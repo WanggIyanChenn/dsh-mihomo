@@ -1,0 +1,42 @@
+{
+  "name": "dsh-mihomo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Run a local mihomo kernel and route DSH outbound traffic through it.",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./client": "./client.js"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "docs",
+    "icon.svg"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "displayName": "Mihomo 代理",
+    "description": "在 DSH 里跑一个 mihomo 内核，把 DSH 的出站流量导到本地代理端口，不用另开 ClashX。",
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "author": "Hsu_Huanyi"
+}

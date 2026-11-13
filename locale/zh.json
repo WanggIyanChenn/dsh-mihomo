@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Mihomo 代理",
+    "description": "在 DSH 进程里托管一个 mihomo 内核，把所有出站请求导到本地代理端口，不用另开 ClashX。",
+    "detail": "docs/DETAIL.md"
+  }
+}
