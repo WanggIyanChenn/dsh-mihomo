@@ -4,7 +4,10 @@ import { DEFAULTS, LOG_FILE, RUNTIME_YAML, SOURCE_YAML } from './lib/settings.js
 import {
   findBinary, versionOf, downloadBinary, readSourceConfig, writeRuntimeConfig,
 } from './lib/kernel.js'
-import { spawnKernel, waitForController, killKernel, selectedNodes, resolveExitNode } from './lib/runner.js'
+import {
+  spawnKernel, waitForController, killKernel, selectedNodes, selectedChain, resolveExitNode,
+} from './lib/runner.js'
+import { createSseHub } from './lib/stream.js'
 import { installProxy } from './lib/proxy.js'
 import { harnessRoot, importHarnessPackage } from './lib/harness.js'
 import { applyAutoPolicy, DEFAULT_JAPAN_DOMAINS } from './lib/policy.js'
@@ -17,7 +20,7 @@ async function loadDefineTool() {
   return mod.defineTool
 }
 
-/** Write a JSON response; the panel polls this shape. */
+/** Write a JSON response; the chip's first-paint fallback reads this shape. */
 function sendJson(res, code, value) {
   const body = JSON.stringify(value)
   res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
@@ -54,6 +57,13 @@ export async function apply(ctx, config) {
   let disposeProxy = null
   let busy = false
 
+  // The chip talks to one SSE endpoint; the hub de-duplicates frames and keeps
+  // the idle connection alive. The node probe only exists while somebody listens.
+  const sse = createSseHub({ pingMs: 25000 })
+  const probeMs = Number(cfg.nodeProbeSeconds) > 0 ? Number(cfg.nodeProbeSeconds) * 1000 : 0
+  let probeTimer = null
+  let probing = false
+
   const log = (message) => {
     try { ctx.logger?.info?.(`[dsh-mihomo] ${message}`) } catch { /* never throw from logging */ }
   }
@@ -74,10 +84,54 @@ export async function apply(ctx, config) {
     }
   }
 
+  /** Push the current snapshot to every open chip connection. */
+  function publish() {
+    sse.broadcast(snapshot())
+  }
+
+  function startProbe() {
+    if (probeMs <= 0 || probeTimer !== null) return
+    probeTimer = setInterval(() => { void probeSelected() }, probeMs)
+    probeTimer.unref?.()
+  }
+
+  function stopProbe() {
+    if (probeTimer === null) return
+    clearInterval(probeTimer)
+    probeTimer = null
+  }
+
+  /**
+   * Refresh the chip's node name without downloading every group.
+   *
+   * Walks only the preferred group chain (two small controller reads in the
+   * usual case) and keeps the previous value when the kernel answers nothing
+   * useful, so the chip never flashes an empty node.
+   */
+  async function probeSelected() {
+    if (probing || state.status !== 'running') return
+    probing = true
+    try {
+      const chain = await selectedChain(cfg.controllerPort)
+      if (state.status !== 'running') return
+      const merged = { ...state.nodes, ...chain.nodes }
+      const changed = chain.exitNode !== state.exitNode
+        || JSON.stringify(merged) !== JSON.stringify(state.nodes)
+      state.nodes = merged
+      state.exitNode = chain.exitNode || state.exitNode
+      if (changed) publish()
+    } catch (err) {
+      log(`node probe failed, keeping the last selection: ${err?.message ?? err}`)
+    } finally {
+      probing = false
+    }
+  }
+
   async function start() {
     if (state.status === 'running' || state.status === 'starting') return snapshot()
     state.status = 'starting'
     state.error = ''
+    publish()
     try {
       let binary = findBinary(cfg.binaryPath)
       if (binary === '') {
@@ -113,8 +167,13 @@ export async function apply(ctx, config) {
       disposeProxy = await installProxy({ port: cfg.httpPort, bypass: cfg.bypass, log })
       state.status = 'running'
       state.since = new Date().toISOString()
-      state.nodes = await selectedNodes(cfg.controllerPort)
-      state.exitNode = resolveExitNode(state.nodes)
+      try {
+        state.nodes = await selectedNodes(cfg.controllerPort)
+        state.exitNode = resolveExitNode(state.nodes)
+      } catch (err) {
+        // A running kernel with no node table is still usable; the probe fills it later.
+        log(`initial node probe failed: ${err?.message ?? err}`)
+      }
       log(`running on 127.0.0.1:${cfg.httpPort} (kernel ${state.version})`)
       void probeExitIp(cfg.httpPort)
     } catch (err) {
@@ -155,6 +214,7 @@ export async function apply(ctx, config) {
       if (!res.ok) return
       const body = await res.json()
       state.exitIp = [body.ip, body.city, body.country].filter(Boolean).join(' · ')
+      publish()
     } catch { /* exit probe is decorative */ }
   }
 
@@ -192,7 +252,10 @@ export async function apply(ctx, config) {
     if (busy) return { ok: false, error: 'another start/stop is in progress', state: snapshot() }
     busy = true
     try { return { ok: true, state: await fn() } }
-    finally { busy = false }
+    finally {
+      busy = false
+      publish()
+    }
   }
 
   ctx.effect(() => {
@@ -224,20 +287,47 @@ export async function apply(ctx, config) {
 
   // Local control surface for the composer chip.
   ctx.inject(['webServer'], (scope) => {
+    // First-paint fallback. Reads the in-memory snapshot only: the old version
+    // pulled the full 80 KB node table on every hit.
     scope.effect(() => scope.webServer.register({
       kind: 'exact',
       path: '/dsh-mihomo/state',
-      handler: async (req, res) => {
+      handler: (req, res) => {
         if (!isLoopback(req)) return sendJson(res, 403, { ok: false, error: 'loopback only' })
-        if (state.status === 'running') {
-          try {
-            state.nodes = await selectedNodes(cfg.controllerPort)
-            state.exitNode = resolveExitNode(state.nodes)
-          } catch { /* keep the last known selection */ }
-        }
         sendJson(res, 200, { ok: true, state: snapshot() })
+        if (probeMs > 0 && state.status === 'running' && !state.exitNode) void probeSelected()
       },
     }), 'dsh-mihomo: state')
+
+    // Push channel for the chip: one frame on connect, then only on change.
+    scope.effect(() => scope.webServer.register({
+      kind: 'exact',
+      path: '/dsh-mihomo/state/stream',
+      handler: (req, res) => {
+        if (!isLoopback(req)) return sendJson(res, 403, { ok: false, error: 'loopback only' })
+        if ((req.method ?? 'GET') !== 'GET') return sendJson(res, 405, { ok: false, error: 'GET only' })
+        res.on('close', () => {
+          sse.remove(res)
+          if (sse.size === 0) stopProbe()
+        })
+        try {
+          sse.add(res, snapshot())
+        } catch {
+          sse.remove(res)
+          return
+        }
+        if (sse.size === 1 && probeMs > 0) {
+          startProbe()
+          void probeSelected()
+        }
+      },
+    }), 'dsh-mihomo: state stream')
+
+    // One plugin lifetime owns one hub; never leave sockets or a timer behind.
+    scope.effect(() => () => {
+      stopProbe()
+      sse.closeAll()
+    }, 'dsh-mihomo: stream cleanup')
 
     scope.effect(() => scope.webServer.register({
       kind: 'exact',

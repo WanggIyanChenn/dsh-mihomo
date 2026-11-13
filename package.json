@@ -1,10 +1,13 @@
 {
   "name": "dsh-mihomo",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Run a local mihomo kernel and route DSH outbound traffic through it.",
   "main": "./index.js",
+  "scripts": {
+    "test": "node test/unit.mjs"
+  },
   "exports": {
     ".": "./index.js",
     "./locale/*.json": "./locale/*.json",

@@ -9,3 +9,4 @@
         autoStart: true
         subscriptionUrl: ''
         subscriptionHours: 6
+        nodeProbeSeconds: 60

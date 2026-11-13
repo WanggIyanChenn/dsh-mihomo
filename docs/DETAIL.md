@@ -17,6 +17,21 @@ Clash subscription **without a separate ClashX / Clash Verge window running**.
    `@deepseek-ai/dsh-http-proxy`, so every `fetch()` — web tools, search, LLM requests — is routed.
 5. Restores the previous dispatcher and stops the kernel when the plugin is disabled.
 
+## Control surface
+
+The composer chip reads one SSE endpoint, `/dsh-mihomo/state/stream`. The host
+writes a snapshot frame on connect and writes again only when the serialized
+snapshot changes; a `: ping` comment frame every 25 s keeps idle connections
+open. `GET /dsh-mihomo/state` remains as a first-paint fallback and answers from
+memory — it no longer queries the kernel.
+
+Node names are refreshed only while at least one chip is connected. Instead of
+`GET /proxies` (~80 KB for a full subscription), the probe walks the preferred
+group chain one group at a time (`🐟 漏网之鱼` → `🔰 选择节点` → leaf, then
+GLOBAL, then the main selector), about 2 KB per pass. A failed probe keeps the
+last known name instead of clearing it; the old full-table helper now throws so
+that fallback can actually run.
+
 ## Configuration
 
 | key | default | meaning |

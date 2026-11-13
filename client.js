@@ -3,7 +3,7 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react');
     const h = React.createElement;
-    const { useCallback, useEffect, useState } = React;
+    const { useCallback, useEffect, useRef, useState } = React;
 
     async function api(path, init) {
       const res = await fetch(path, {
@@ -17,6 +17,58 @@ window.__ModuleLoader__.load({
     function ProxyChip() {
       const [state, setState] = useState(null);
       const [busy, setBusy] = useState(false);
+      const sourceRef = useRef(null);
+      const retryRef = useRef(null);
+
+      // Push updates: one frame on connect, then only when the host sees a
+      // change. Reconnect after 3 s; the initial GET below covers first paint.
+      useEffect(() => {
+        let disposed = false;
+        const apply = (next) => { if (next) setState(next); };
+
+        function schedule() {
+          if (disposed || retryRef.current) return;
+          retryRef.current = setTimeout(() => {
+            retryRef.current = null;
+            connect();
+          }, 3000);
+        }
+
+        function connect() {
+          if (disposed || sourceRef.current) return;
+          let source;
+          try {
+            source = new EventSource('/dsh-mihomo/state/stream');
+          } catch {
+            schedule();
+            return;
+          }
+          sourceRef.current = source;
+          source.onmessage = (event) => {
+            try { apply(JSON.parse(event.data)); } catch { /* ignore malformed frame */ }
+          };
+          source.onopen = () => {
+            if (retryRef.current) {
+              clearTimeout(retryRef.current);
+              retryRef.current = null;
+            }
+          };
+          source.onerror = () => {
+            source.close();
+            if (sourceRef.current === source) sourceRef.current = null;
+            schedule();
+          };
+        }
+
+        connect();
+        return () => {
+          disposed = true;
+          if (retryRef.current) clearTimeout(retryRef.current);
+          retryRef.current = null;
+          if (sourceRef.current) sourceRef.current.close();
+          sourceRef.current = null;
+        };
+      }, []);
 
       const refresh = useCallback(async () => {
         try {
@@ -27,22 +79,20 @@ window.__ModuleLoader__.load({
         }
       }, []);
 
-      useEffect(() => {
-        refresh();
-        const timer = setInterval(refresh, 10000);
-        return () => clearInterval(timer);
-      }, [refresh]);
+      useEffect(() => { void refresh(); }, [refresh]);
 
       const toggle = async () => {
         if (busy) return;
         setBusy(true);
         try {
           const running = state && state.status === 'running';
-          await api('/dsh-mihomo/action', {
+          const body = await api('/dsh-mihomo/action', {
             method: 'POST',
             body: JSON.stringify({ action: running ? 'stop' : 'start' }),
           });
-          await refresh();
+          // The action already returns the new state; no extra round trip.
+          if (body && body.state) setState(body.state);
+          else await refresh();
         } catch (err) {
           setState({ status: 'error', error: String(err && err.message ? err.message : err) });
         } finally {
